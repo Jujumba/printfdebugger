@@ -6,6 +6,7 @@ const libdw = @cImport({
 });
 
 const mem = std.mem;
+const heap = std.heap;
 
 const Sources = source.Sources;
 const SourceFileContent = source.SourceFileContent;
@@ -20,6 +21,8 @@ const C_SUCCESS: c_int = 0;
 const logger = std.log.scoped(.dwarf);
 
 pub fn readDwarfSources(allocator: Allocator, fd: c_int) Sources {
+    var scratch_arena = heap.ArenaAllocator.init(heap.page_allocator);
+
     const dbg_session = libdw.dwarf_begin(fd, 0).?;
     defer _ = libdw.dwarf_end(dbg_session);
 
@@ -41,7 +44,7 @@ pub fn readDwarfSources(allocator: Allocator, fd: c_int) Sources {
             continue;
         }
 
-        readLines(allocator, &sources, lines, nlines);
+        readLines(allocator, scratch_arena.allocator(), &sources, lines, nlines);
     }
 
     return sources;
@@ -49,6 +52,7 @@ pub fn readDwarfSources(allocator: Allocator, fd: c_int) Sources {
 
 fn readLines(
     allocator: Allocator,
+    scratch_allocator: Allocator,
     sources: *Sources,
     lines: *libdw.Dwarf_Lines,
     nlines: usize,
@@ -70,7 +74,8 @@ fn readLines(
         }
     };
 
-    var traversed_lines: HashMap(SourceFileLine, void, Context, 80) = .init(allocator);
+    var traversed_lines: HashMap(SourceFileLine, void, Context, 80) = .init(scratch_allocator);
+
     for (0..nlines) |i| {
         const line: *libdw.Dwarf_Line = libdw.dwarf_onesrcline(lines, i) orelse continue;
         const file_name: []const u8 = blk: {
@@ -82,14 +87,12 @@ fn readLines(
         const addr = getLineAddr(line) catch continue;
         const lineno = getLineNo(line) catch continue;
         const source_file = sources.getFileOrRead(allocator, file_name) catch continue;
+        const source_line: SourceFileLine = .{ .file_name = file_name, .lineno = lineno };
 
-        // logger.debug("source file: {s}:{d}; number of lines in source: {d}", .{ file_name, lineno, source_file.lineidx.len });
-
-        if (lineno == 0 or lineno >= source_file.lineidx.len) continue;
-        if (traversed_lines.contains(.{ .file_name = file_name, .lineno = lineno })) {
+        if (lineno == 0 or lineno >= source_file.lineidx.len or traversed_lines.contains(source_line)) {
             continue;
         }
-        traversed_lines.put(.{ .file_name = file_name, .lineno = lineno }, {}) catch @panic("oom");
+        traversed_lines.put(source_line, {}) catch @panic("oom");
 
         const nth_line_start = source_file.lineidx[lineno - 1];
         const nth_line_end = source_file.lineidx[lineno];
@@ -97,7 +100,7 @@ fn readLines(
 
         if (mem.containsAtLeast(u8, nth_line, 1, "printf")) {
             logger.info("{s}:{d} (0x{x}) has a printf", .{ file_name, lineno, addr });
-            sources.printf_lines.put(addr, .{ .file_name = file_name, .lineno = lineno }) catch @panic("oom");
+            sources.printf_lines.put(addr, source_line) catch @panic("oom");
         }
     }
 }

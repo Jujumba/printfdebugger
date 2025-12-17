@@ -3,12 +3,13 @@ const source = @import("source.zig");
 const proc = @import("proc.zig");
 const dwarf = @import("dwarf.zig");
 
-const c = @cImport({
+pub const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("fcntl.h");
     @cInclude("sys/ptrace.h");
     @cInclude("sys/wait.h");
     @cInclude("sys/user.h");
+    @cInclude("errno.h");
 });
 
 const mem = std.mem;
@@ -23,6 +24,9 @@ const print = debug.print;
 const assert = debug.assert;
 const panic = debug.panic;
 
+const C_NULL: usize = @as(usize, 0);
+const Debugger = @This();
+
 allocator: Allocator,
 debugee_fd: c_int,
 debugee_path: [*:0]const u8,
@@ -34,14 +38,16 @@ pub const logger = std.log.scoped(.debugger);
 
 pub const Error = error{ ReadFailed, ForkFail, Open, NotLaunched, UnknownBreakPoint };
 
-pub const ExecutionStatus = enum {
-    exited,
-    running,
+// TODO: replace with actual syscall table
+pub const MMAP_SYSNO: u64 = 9;
+
+pub const StopReason = enum {
+    syscall,
+    signal,
+    breakpoint,
+    termination,
+    exit,
 };
-
-const C_NULL: usize = @as(usize, 0);
-
-const Debugger = @This();
 
 pub fn init(allocator: Allocator, path: [*:0]const u8) Debugger.Error!Debugger {
     const fd = c.open(path, c.O_RDONLY);
@@ -75,33 +81,32 @@ pub fn run(debugger: *Debugger) (Debugger.Error || Allocator.Error)!void {
         _ = c.execve(debugger.debugee_path, @ptrCast(&argv), @ptrCast(&env));
         @panic("failed to start the child process");
     }
+    // catch execve
     _ = debugger.wait() catch unreachable;
-
-    const maps = proc.Map.readFromVfs(debugger.allocator, debugger.debugee_pid.?) catch |err| panic("failed to read /proc/pid/maps from the kernel: {}\n", .{err});
-
-    const text_map: proc.Map = for (maps.items) |map| {
-        logger.debug("map.pathname = {s}", .{map.pathname});
-        if (map.permissions.execute) break map;
-    } else panic("no executable code in {s}\n", .{debugger.debugee_path});
-
-    debugger.insertBreakPoint(text_map.address_start) catch unreachable;
-
-    _ = debugger.cont() catch unreachable;
+    assert(c.ptrace(c.PTRACE_SETOPTIONS, debugger.debugee_pid.?, C_NULL, c.PTRACE_O_TRACESYSGOOD) != -1);
 
     // TODO: insert breakpoints in debugger.printf_lines
+    // TODO: figure out how to insert breakpoints in unmapped code
 }
 
-pub fn wait(debugger: *Debugger) Debugger.Error!ExecutionStatus {
+pub fn wait(debugger: *Debugger) Debugger.Error!StopReason {
     if (debugger.debugee_pid == null) return Error.NotLaunched;
     var wait_status: c_int = undefined;
     assert(c.waitpid(debugger.debugee_pid.?, &wait_status, 0) != -1);
 
-    return if (c.WIFEXITED(wait_status) or c.WIFSIGNALED(wait_status)) .exited else .running;
+    if (c.WIFEXITED(wait_status)) {
+        return .exit;
+    } else if (c.WIFSIGNALED(wait_status)) {
+        return .termination;
+    } else {
+        assert(c.WIFSTOPPED(wait_status));
+        return if (c.WSTOPSIG(wait_status) == (c.SIGTRAP | 0x80)) .syscall else .breakpoint;
+    }
 }
 
 pub fn cont(debugger: *Debugger) Debugger.Error!void {
     if (debugger.debugee_pid == null) return Error.NotLaunched;
-    assert(c.ptrace(c.PTRACE_CONT, debugger.debugee_pid.?, C_NULL, C_NULL) != -1);
+    assert(c.ptrace(c.PTRACE_SYSCALL, debugger.debugee_pid.?, C_NULL, C_NULL) != -1);
 }
 
 pub fn insertBreakPoint(debugger: *Debugger, addr: usize) !void {
@@ -130,8 +135,12 @@ pub fn insertBreakPoint(debugger: *Debugger, addr: usize) !void {
     logger.info("inserted a breakpoint at 0x{X}", .{aligned_addr});
 }
 
-pub fn restoreBreakPoint(debugger: *Debugger, regs: c.user_regs_struct) Debugger.Error!void {
+pub fn restoreBreakPoint(debugger: *Debugger) Debugger.Error!void {
+    var regs = debugger.getRegs();
+    regs.rip -= 1;
+
     const original_instruction = debugger.breakpoints.get(regs.rip) orelse return error.UnknownBreakPoint;
+    logger.debug("hit a breakpoint at 0x{X}", .{regs.rip});
     const modulo8 = @mod(regs.rip, 8);
     const aligned_addr = regs.rip - modulo8;
 
@@ -141,6 +150,7 @@ pub fn restoreBreakPoint(debugger: *Debugger, regs: c.user_regs_struct) Debugger
     if (status == -1) {
         panic("failed to restore breakpoint in debugee's memory (pid {}) at address {}\n", .{ debugger.debugee_pid.?, aligned_addr });
     }
+
     debugger.setRegs(regs);
 }
 
@@ -160,8 +170,8 @@ pub fn setRegs(debugger: *Debugger, regs: c.user_regs_struct) void {
     }
 }
 
-fn insertPrintfBreakPoints(debugger: *Debugger, text_map: proc.Map) (Debugger.Error || Allocator.Error)!void {
-    var it = debugger.printf_lines.keyIterator();
+pub fn insertPrintfBreakPoints(debugger: *Debugger, text_map: proc.Map) (Debugger.Error || Allocator.Error)!void {
+    var it = debugger.sources.printf_lines.keyIterator();
 
     while (it.next()) |printf_addr| {
         try debugger.insertBreakPoint(text_map.address_start + printf_addr.*);
