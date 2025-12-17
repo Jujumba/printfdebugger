@@ -50,6 +50,7 @@ pub const SourceFileContent = struct {
         const content = try file.readToEndAlloc(allocator, 8 * mb);
 
         var lineidx: ArrayList(u32) = .empty;
+        lineidx.append(allocator, 0) catch @panic("oom");
         for (content, 0..) |c, i| {
             if (c == '\n') lineidx.append(allocator, @intCast(i)) catch @panic("oom");
         }

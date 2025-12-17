@@ -10,6 +10,7 @@ pub const c = @cImport({
     @cInclude("sys/wait.h");
     @cInclude("sys/user.h");
     @cInclude("errno.h");
+    @cInclude("stdio.h");
 });
 
 const mem = std.mem;
@@ -41,12 +42,31 @@ pub const Error = error{ ReadFailed, ForkFail, Open, NotLaunched, UnknownBreakPo
 // TODO: replace with actual syscall table
 pub const MMAP_SYSNO: u64 = 9;
 
-pub const StopReason = enum {
-    syscall,
-    signal,
-    breakpoint,
-    termination,
-    exit,
+pub const StopStatus = struct {
+    raw: c_int,
+
+    pub fn exited(status: StopStatus) bool {
+        return c.WIFEXITED(status.raw);
+    }
+
+    pub fn terminated(status: StopStatus) bool {
+        return c.WIFSIGNALED(status.raw);
+    }
+
+    pub fn signal(status: StopStatus) bool {
+        return c.WIFSTOPPED(status.raw);
+    }
+
+    pub fn isSyscall(status: StopStatus) bool {
+        if (!status.signal()) return false;
+        const syscall_signal = c.SIGTRAP | 0x80;
+        return c.WSTOPSIG(status.raw) == syscall_signal;
+    }
+
+    pub fn isSegfault(status: StopStatus) bool {
+        if (!status.signal()) return false;
+        return c.WSTOPSIG(status.raw) == c.SIGSEGV;
+    }
 };
 
 pub fn init(allocator: Allocator, path: [*:0]const u8) Debugger.Error!Debugger {
@@ -83,30 +103,22 @@ pub fn run(debugger: *Debugger) (Debugger.Error || Allocator.Error)!void {
     }
     // catch execve
     _ = debugger.wait() catch unreachable;
-    assert(c.ptrace(c.PTRACE_SETOPTIONS, debugger.debugee_pid.?, C_NULL, c.PTRACE_O_TRACESYSGOOD) != -1);
 
-    // TODO: insert breakpoints in debugger.printf_lines
-    // TODO: figure out how to insert breakpoints in unmapped code
+    const tracing_options = c.PTRACE_O_TRACESYSGOOD | c.PTRACE_O_TRACEEXIT | c.PTRACE_O_EXITKILL;
+
+    assert(c.ptrace(c.PTRACE_SETOPTIONS, debugger.debugee_pid.?, C_NULL, tracing_options) != -1);
 }
 
-pub fn wait(debugger: *Debugger) Debugger.Error!StopReason {
+pub fn wait(debugger: *Debugger) Debugger.Error!StopStatus {
     if (debugger.debugee_pid == null) return Error.NotLaunched;
     var wait_status: c_int = undefined;
     assert(c.waitpid(debugger.debugee_pid.?, &wait_status, 0) != -1);
-
-    if (c.WIFEXITED(wait_status)) {
-        return .exit;
-    } else if (c.WIFSIGNALED(wait_status)) {
-        return .termination;
-    } else {
-        assert(c.WIFSTOPPED(wait_status));
-        return if (c.WSTOPSIG(wait_status) == (c.SIGTRAP | 0x80)) .syscall else .breakpoint;
-    }
+    return .{ .raw = wait_status };
 }
 
 pub fn cont(debugger: *Debugger) Debugger.Error!void {
     if (debugger.debugee_pid == null) return Error.NotLaunched;
-    assert(c.ptrace(c.PTRACE_SYSCALL, debugger.debugee_pid.?, C_NULL, C_NULL) != -1);
+    assert(c.ptrace(c.PTRACE_CONT, debugger.debugee_pid.?, C_NULL, C_NULL) != -1);
 }
 
 pub fn insertBreakPoint(debugger: *Debugger, addr: usize) !void {
@@ -116,33 +128,30 @@ pub fn insertBreakPoint(debugger: *Debugger, addr: usize) !void {
     const int3: c_long = 0xCC;
     const aligned_addr = addr - modulo8;
 
-    logger.info("inserting a breakpoint at 0x{x}", .{aligned_addr});
-
-    const word = c.ptrace(c.PTRACE_PEEKTEXT, debugger.debugee_pid.?, aligned_addr, C_NULL);
-    if (word == -1) {
-        panic("failed to read debugee's memory (pid {}) at address {}\n", .{ debugger.debugee_pid.?, aligned_addr });
+    const original_instruction = c.ptrace(c.PTRACE_PEEKTEXT, debugger.debugee_pid.?, aligned_addr, C_NULL);
+    if (original_instruction == -1) {
+        panic("failed to read debugee's memory (pid {}) at address 0x{X}\n", .{ debugger.debugee_pid.?, aligned_addr });
     }
 
-    const int3_inserted: c_long = (word & mask) | (int3 << shift);
-    logger.debug("word = 0x{X}, int_inserted = 0x{X}", .{ word, int3_inserted });
+    const int3_inserted: c_long = (original_instruction & mask) | (int3 << shift);
 
     const status = c.ptrace(c.PTRACE_POKETEXT, debugger.debugee_pid.?, aligned_addr, int3_inserted);
     if (status == -1) {
         panic("failed to insert in debugee (pid {}) at address {}\n", .{ debugger.debugee_pid.?, aligned_addr });
     }
 
-    try debugger.breakpoints.put(addr, @intCast(word));
-    logger.info("inserted a breakpoint at 0x{X}", .{aligned_addr});
+    try debugger.breakpoints.put(addr, @bitCast(original_instruction));
+    logger.info("inserted a breakpoint at 0x{X}, original_instruction = 0x{X}", .{ addr, original_instruction });
 }
 
 pub fn restoreBreakPoint(debugger: *Debugger) Debugger.Error!void {
     var regs = debugger.getRegs();
     regs.rip -= 1;
 
-    const original_instruction = debugger.breakpoints.get(regs.rip) orelse return error.UnknownBreakPoint;
-    logger.debug("hit a breakpoint at 0x{X}", .{regs.rip});
     const modulo8 = @mod(regs.rip, 8);
     const aligned_addr = regs.rip - modulo8;
+    const original_instruction = debugger.breakpoints.get(regs.rip) orelse return error.UnknownBreakPoint;
+    logger.debug("hit a breakpoint at 0x{X}", .{regs.rip});
 
     logger.debug("restoring breakpoint at 0x{X}, original_instruction = 0x{X}", .{ regs.rip, original_instruction });
 
@@ -170,10 +179,13 @@ pub fn setRegs(debugger: *Debugger, regs: c.user_regs_struct) void {
     }
 }
 
-pub fn insertPrintfBreakPoints(debugger: *Debugger, text_map: proc.Map) (Debugger.Error || Allocator.Error)!void {
+pub fn insertPrintfBreakPoints(debugger: *Debugger, text_map: proc.Map) !void {
     var it = debugger.sources.printf_lines.keyIterator();
+    _ = text_map;
 
-    while (it.next()) |printf_addr| {
-        try debugger.insertBreakPoint(text_map.address_start + printf_addr.*);
+    while (it.next()) |printf_offset| {
+        const printf_addr = 0 + printf_offset.*;
+        // assert(regs.rip < printf_addr);
+        try debugger.insertBreakPoint(printf_addr);
     }
 }

@@ -20,6 +20,23 @@ const C_SUCCESS: c_int = 0;
 
 const logger = std.log.scoped(.dwarf);
 
+const HashContext = struct {
+    const This = @This();
+
+    pub fn hash(ctx: This, key: SourceFileLine) u64 {
+        _ = ctx;
+        var hasher = std.hash.Fnv1a_64.init();
+        hasher.update(key.file_name);
+        hasher.update(&mem.toBytes(key.lineno));
+        return hasher.final();
+    }
+
+    pub fn eql(ctx: This, x: SourceFileLine, y: SourceFileLine) bool {
+        _ = ctx;
+        return mem.eql(u8, x.file_name, y.file_name) and x.lineno == y.lineno;
+    }
+};
+
 pub fn readDwarfSources(allocator: Allocator, fd: c_int) Sources {
     var scratch_arena = heap.ArenaAllocator.init(heap.page_allocator);
 
@@ -57,24 +74,7 @@ fn readLines(
     lines: *libdw.Dwarf_Lines,
     nlines: usize,
 ) void {
-    const Context = struct {
-        const This = @This();
-
-        pub fn hash(ctx: This, key: SourceFileLine) u64 {
-            _ = ctx;
-            var hasher = std.hash.Fnv1a_64.init();
-            hasher.update(key.file_name);
-            hasher.update(&mem.toBytes(key.lineno));
-            return hasher.final();
-        }
-
-        pub fn eql(ctx: This, x: SourceFileLine, y: SourceFileLine) bool {
-            _ = ctx;
-            return mem.eql(u8, x.file_name, y.file_name) and x.lineno == y.lineno;
-        }
-    };
-
-    var traversed_lines: HashMap(SourceFileLine, void, Context, 80) = .init(scratch_allocator);
+    var traversed_lines: HashMap(SourceFileLine, void, HashContext, 80) = .init(scratch_allocator);
 
     for (0..nlines) |i| {
         const line: *libdw.Dwarf_Line = libdw.dwarf_onesrcline(lines, i) orelse continue;
@@ -92,6 +92,7 @@ fn readLines(
         if (lineno == 0 or lineno >= source_file.lineidx.len or traversed_lines.contains(source_line)) {
             continue;
         }
+
         traversed_lines.put(source_line, {}) catch @panic("oom");
 
         const nth_line_start = source_file.lineidx[lineno - 1];
@@ -99,7 +100,7 @@ fn readLines(
         const nth_line = source_file.content[nth_line_start..nth_line_end];
 
         if (mem.containsAtLeast(u8, nth_line, 1, "printf")) {
-            logger.info("{s}:{d} (0x{x}) has a printf", .{ file_name, lineno, addr });
+            logger.info("{s}:{d} (0x{X}) has a printf", .{ file_name, lineno, addr });
             sources.printf_lines.put(addr, source_line) catch @panic("oom");
         }
     }
