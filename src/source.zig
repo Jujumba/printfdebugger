@@ -19,12 +19,15 @@ pub const Sources = struct {
         if (sources.files.get(file_name)) |source| return source;
 
         const source: SourceFileContent = try .read(allocator, file_name);
-        sources.files.put(file_name, source) catch @panic("oom");
+        try sources.files.put(file_name, source);
         return source;
     }
 
     pub fn init(allocator: Allocator) Sources {
-        return .{ .files = .init(allocator), .printf_lines = .init(allocator) };
+        return .{
+            .files = .init(allocator),
+            .printf_lines = .init(allocator),
+        };
     }
 
     pub fn deinit(source_files: *Sources) void {
@@ -38,16 +41,12 @@ pub const SourceFileContent = struct {
     lineidx: []const u32,
 
     pub fn read(allocator: Allocator, fname: []const u8) !SourceFileContent {
-        errdefer |err| switch (err) {
-            error.FileTooBig => logger.warn("{s} exceeded 8MB limit", .{fname}),
-            // error.FileNotFound => logger.warn("{s} doesn't exist", .{fname}),
-            else => {},
-        };
-
         const file = try fs.cwd().openFile(fname, .{});
         defer file.close();
         const mb: usize = 1024 * 1024;
-        const content = try file.readToEndAlloc(allocator, 8 * mb);
+        var reader = file.reader(&.{});
+        const reader_interface = &reader.interface;
+        const content = try reader_interface.allocRemaining(allocator, .limited(8 * mb));
 
         var lineidx: ArrayList(u32) = .empty;
         lineidx.append(allocator, 0) catch @panic("oom");

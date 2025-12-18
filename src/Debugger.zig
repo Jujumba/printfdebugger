@@ -61,11 +61,6 @@ pub const StopReason = struct {
         const syscall_signal = c.SIGTRAP | 0x80;
         return c.WSTOPSIG(status.raw) == syscall_signal;
     }
-
-    pub fn isSegfault(status: StopReason) bool {
-        if (!status.signal()) return false;
-        return c.WSTOPSIG(status.raw) == c.SIGSEGV;
-    }
 };
 
 pub fn init(allocator: Allocator, path: [*:0]const u8) (Debugger.Error || dwarf.Error)!Debugger {
@@ -82,7 +77,7 @@ pub fn init(allocator: Allocator, path: [*:0]const u8) (Debugger.Error || dwarf.
 }
 
 pub fn deinit(debugger: *Debugger) void {
-    _ = c.close(debugger.debugee_fd);
+    assert(c.close(debugger.debugee_fd) == 0);
     debugger.breakpoints.deinit();
     debugger.sources.deinit();
 }
@@ -111,11 +106,11 @@ pub fn run(debugger: *Debugger) !void {
     const debugee_realpath = try fs.realpathAlloc(debugger.allocator, debugger.debugee_path[0..debugee_path_len]);
     const maps = try proc.Map.readFromVfs(debugger.allocator, debugger.debugee_pid.?);
 
-    const executable_proc_map = for (maps.items) |map| {
-        if (map.permissions.execute and mem.eql(u8, map.pathname, debugee_realpath)) break map;
+    debugger.executable_proc_map = for (maps.items) |map| {
+        if (map.permissions.execute and mem.eql(u8, map.pathname, debugee_realpath)) {
+            break map;
+        }
     } else panic("failed to find executable map in {s}", .{debugee_realpath});
-
-    debugger.executable_proc_map = executable_proc_map;
 }
 
 pub fn wait(debugger: *Debugger) Debugger.Error!StopReason {
@@ -150,7 +145,7 @@ pub fn insertBreakPoint(debugger: *Debugger, addr: usize) !void {
     }
 
     try debugger.breakpoints.put(addr, @bitCast(original_instruction));
-    logger.info("inserted a breakpoint at 0x{X}, original_instruction = 0x{X}", .{ addr, original_instruction });
+    // logger.info("inserted a breakpoint at 0x{X}, original_instruction = 0x{X}", .{ addr, original_instruction });
 }
 
 pub fn restoreBreakPoint(debugger: *Debugger) Debugger.Error!void {
@@ -160,9 +155,9 @@ pub fn restoreBreakPoint(debugger: *Debugger) Debugger.Error!void {
     const modulo8 = @mod(regs.rip, 8);
     const aligned_addr = regs.rip - modulo8;
     const original_instruction = debugger.breakpoints.get(regs.rip) orelse return error.UnknownBreakPoint;
-    logger.debug("hit a breakpoint at 0x{X}", .{regs.rip});
+    // logger.debug("hit a breakpoint at 0x{X}", .{regs.rip});
 
-    logger.debug("restoring breakpoint at 0x{X}, original_instruction = 0x{X}", .{ regs.rip, original_instruction });
+    // logger.debug("restoring breakpoint at 0x{X}, original_instruction = 0x{X}", .{ regs.rip, original_instruction });
 
     const status = c.ptrace(c.PTRACE_POKETEXT, debugger.debugee_pid.?, aligned_addr, original_instruction);
     if (status == -1) {

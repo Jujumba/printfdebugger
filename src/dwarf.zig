@@ -20,7 +20,7 @@ const C_SUCCESS: c_int = 0;
 
 const logger = std.log.scoped(.dwarf);
 
-pub const Error = error{NoDwarfInfo};
+pub const Error = error{ NoDwarfInfo, LibDw };
 
 const HashContext = struct {
     const This = @This();
@@ -103,7 +103,7 @@ fn readLines(
         const nth_line = source_file.content[nth_line_start..nth_line_end];
 
         if (mem.containsAtLeast(u8, nth_line, 1, "printf")) {
-            logger.info("{s}:{d} (0x{X}) has a printf", .{ file_name, lineno, addr });
+            // logger.info("{s}:{d} (0x{X}) has a printf", .{ file_name, lineno, addr });
             sources.printf_lines.put(addr, source_line) catch @panic("oom");
         }
     }
@@ -112,7 +112,7 @@ fn readLines(
 fn getLineAddr(line: *libdw.Dwarf_Line) !usize {
     var addr: usize = 0;
     if (libdw.dwarf_lineaddr(line, &addr) != C_SUCCESS) {
-        return error.InvalidFile;
+        return error.LibDw;
     }
     return addr;
 }
@@ -120,7 +120,7 @@ fn getLineAddr(line: *libdw.Dwarf_Line) !usize {
 fn getLineNo(line: *libdw.Dwarf_Line) !u32 {
     var lineno: u32 = 0;
     if (libdw.dwarf_lineno(line, @ptrCast(&lineno)) != C_SUCCESS) {
-        return error.InvalidFile;
+        return error.LibDw;
     }
     return lineno;
 }
