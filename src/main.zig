@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const logger = @import("logger.zig");
 const ansi = @import("ansi.zig");
 const dwarf = @import("dwarf.zig");
@@ -31,31 +32,47 @@ pub const std_options: std.Options = .{
     .logFn = logger.myLogger,
 };
 
-// Fun fact: if you exract main() into a separate function called mainImpl()
-// and call it from main() to catch error and print error log, compiler (Zig 0.15.2) will crash
-
 pub fn main() !void {
     var arena = ArenaAllocator.init(heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    const args = std.process.argsAlloc(allocator) catch |err| panic("failed to allocate cli arguments: {any}", .{err});
+    defer std.process.argsFree(allocator, args);
 
+    mainImpl(allocator, args) catch |err| {
+        switch (err) {
+            error.NotEnoughCliArgs => log.err("no program to debug; usage: {s} <EXECUTABLE>", .{args[0]}),
+            error.NoDwarfInfo => log.err("executable {s} has no DWARF debug info", .{args[1]}),
+            else => log.err("failed to printfdebug {s}: {any}", .{ args[1], err }),
+        }
+
+        if (@errorReturnTrace()) |err_trace| {
+            log.info("error return trace:", .{});
+            var buffer: [1024]u8 = undefined;
+
+            const stdout = std.fs.File.stdout();
+            var writer = stdout.writer(&buffer);
+            const interface = &writer.interface;
+
+            defer interface.flush() catch {};
+            err_trace.format(interface) catch {};
+        }
+
+        std.process.exit(1);
+    };
+}
+
+fn mainImpl(allocator: Allocator, args: [][:0]u8) !void {
     var stdin_buffer: [256]u8 = undefined;
 
     var stdin = try setupStdin();
     var stdin_reader = stdin.reader(&stdin_buffer);
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
     if (args.len < 2) {
-        log.err("no executable to debug; usage {s} <EXECUTABLE>", .{args[0]});
         return error.NotEnoughCliArgs;
     }
 
-    var debugger = Debugger.init(allocator, args[1]) catch |err| {
-        if (err == error.NoDwarfInfo) log.err("executable {s} has no DWARF debug info", .{args[1]});
-        return err;
-    };
+    var debugger = try Debugger.init(allocator, args[1]);
     defer debugger.deinit();
 
     try debugger.run();
@@ -141,3 +158,5 @@ fn setupStdin() !std.fs.File {
     }
     return stdin;
 }
+
+fn printErrorTrace(trace: *builtin.StackTrace) void {}
