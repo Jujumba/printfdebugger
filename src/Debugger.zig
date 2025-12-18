@@ -13,6 +13,7 @@ pub const c = @cImport({
     @cInclude("stdio.h");
 });
 
+const fs = std.fs;
 const mem = std.mem;
 const debug = std.debug;
 
@@ -32,6 +33,7 @@ allocator: Allocator,
 debugee_fd: c_int,
 debugee_path: [*:0]const u8,
 debugee_pid: ?c_int = null,
+executable_proc_map: ?proc.Map = null,
 sources: Sources,
 breakpoints: AutoHashMap(usize, usize),
 
@@ -42,28 +44,28 @@ pub const Error = error{ ReadFailed, ForkFail, Open, NotLaunched, UnknownBreakPo
 // TODO: replace with actual syscall table
 pub const MMAP_SYSNO: u64 = 9;
 
-pub const StopStatus = struct {
+pub const StopReason = struct {
     raw: c_int,
 
-    pub fn exited(status: StopStatus) bool {
+    pub fn exited(status: StopReason) bool {
         return c.WIFEXITED(status.raw);
     }
 
-    pub fn terminated(status: StopStatus) bool {
+    pub fn terminated(status: StopReason) bool {
         return c.WIFSIGNALED(status.raw);
     }
 
-    pub fn signal(status: StopStatus) bool {
+    pub fn signal(status: StopReason) bool {
         return c.WIFSTOPPED(status.raw);
     }
 
-    pub fn isSyscall(status: StopStatus) bool {
+    pub fn isSyscall(status: StopReason) bool {
         if (!status.signal()) return false;
         const syscall_signal = c.SIGTRAP | 0x80;
         return c.WSTOPSIG(status.raw) == syscall_signal;
     }
 
-    pub fn isSegfault(status: StopStatus) bool {
+    pub fn isSegfault(status: StopReason) bool {
         if (!status.signal()) return false;
         return c.WSTOPSIG(status.raw) == c.SIGSEGV;
     }
@@ -88,7 +90,7 @@ pub fn deinit(debugger: *Debugger) void {
     debugger.sources.deinit();
 }
 
-pub fn run(debugger: *Debugger) (Debugger.Error || Allocator.Error)!void {
+pub fn run(debugger: *Debugger) !void {
     const fork_pid = c.fork();
     assert(fork_pid >= 0);
     debugger.debugee_pid = fork_pid;
@@ -107,9 +109,19 @@ pub fn run(debugger: *Debugger) (Debugger.Error || Allocator.Error)!void {
     const tracing_options = c.PTRACE_O_TRACESYSGOOD | c.PTRACE_O_TRACEEXIT | c.PTRACE_O_EXITKILL;
 
     assert(c.ptrace(c.PTRACE_SETOPTIONS, debugger.debugee_pid.?, C_NULL, tracing_options) != -1);
+
+    const debugee_path_len = mem.len(debugger.debugee_path);
+    const debugee_realpath = try fs.realpathAlloc(debugger.allocator, debugger.debugee_path[0..debugee_path_len]);
+    const maps = try proc.Map.readFromVfs(debugger.allocator, debugger.debugee_pid.?);
+
+    const executable_proc_map = for (maps.items) |map| {
+        if (map.permissions.execute and mem.eql(u8, map.pathname, debugee_realpath)) break map;
+    } else panic("failed to find executable map in {s}", .{debugee_realpath});
+
+    debugger.executable_proc_map = executable_proc_map;
 }
 
-pub fn wait(debugger: *Debugger) Debugger.Error!StopStatus {
+pub fn wait(debugger: *Debugger) Debugger.Error!StopReason {
     if (debugger.debugee_pid == null) return Error.NotLaunched;
     var wait_status: c_int = undefined;
     assert(c.waitpid(debugger.debugee_pid.?, &wait_status, 0) != -1);
@@ -179,9 +191,8 @@ pub fn setRegs(debugger: *Debugger, regs: c.user_regs_struct) void {
     }
 }
 
-pub fn insertPrintfBreakPoints(debugger: *Debugger, text_map: proc.Map) !void {
+pub fn insertPrintfBreakPoints(debugger: *Debugger) !void {
     var it = debugger.sources.printf_lines.keyIterator();
-    _ = text_map;
 
     while (it.next()) |printf_offset| {
         const printf_addr = 0 + printf_offset.*;

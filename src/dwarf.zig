@@ -39,6 +39,7 @@ const HashContext = struct {
 
 pub fn readDwarfSources(allocator: Allocator, fd: c_int) Sources {
     var scratch_arena = heap.ArenaAllocator.init(heap.page_allocator);
+    defer scratch_arena.deinit();
 
     const dbg_session = libdw.dwarf_begin(fd, 0).?;
     defer _ = libdw.dwarf_end(dbg_session);
