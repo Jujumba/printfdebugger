@@ -20,6 +20,8 @@ const C_SUCCESS: c_int = 0;
 
 const logger = std.log.scoped(.dwarf);
 
+pub const Error = error{NoDwarfInfo};
+
 const HashContext = struct {
     const This = @This();
 
@@ -37,11 +39,11 @@ const HashContext = struct {
     }
 };
 
-pub fn readDwarfSources(allocator: Allocator, fd: c_int) Sources {
+pub fn readDwarfSources(allocator: Allocator, fd: c_int) !Sources {
     var scratch_arena = heap.ArenaAllocator.init(heap.page_allocator);
     defer scratch_arena.deinit();
 
-    const dbg_session = libdw.dwarf_begin(fd, 0).?;
+    const dbg_session = libdw.dwarf_begin(fd, 0) orelse return Error.NoDwarfInfo;
     defer _ = libdw.dwarf_end(dbg_session);
 
     var offset: libdw.Dwarf_Off = 0;
