@@ -4,7 +4,7 @@ Have you been "printfdebugging"? This debugger (not some blasphemous gdb front-e
 It inserts a breakpoint at every line containing `printf` (even in comments!)
 
 > [!CAUTION]
-> My flawless debugger only supports non-PIE executable
+> My flawless debugger only supports non-PIE executables
 
 # Building
 Make sure you have the following installed:
@@ -17,6 +17,14 @@ Then run
 zig build -Dcpu=native -Doptimize=ReleaseSafe
 ```
 to compile the project.
+
+## Running example
+To just get a feel of how this thing absolutely bangs, let's printfdebug a sample program:
+```
+gcc debugee.c -o debugee -g -no-pie
+zig build run -- debugee
+# ✨ your turn to printf debug 💫
+```
 
 # Usage
 There is only one command - `c` for `c`ontinue! Don't be fooled by a gdb like propmt, it's not interactive (it's time to grow up).
