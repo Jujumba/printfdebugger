@@ -42,7 +42,8 @@ pub fn main() !void {
     mainImpl(allocator, args) catch |err| {
         switch (err) {
             error.NotEnoughCliArgs => log.err("no program to debug; usage: {s} <EXECUTABLE>", .{args[0]}),
-            error.NoDwarfInfo => log.err("executable {s} has no DWARF debug info", .{args[1]}),
+            error.NoDwarfInfo => log.err("executable {s} has no DWARF debug info; consider recompiling your app", .{args[1]}),
+            error.Pie => log.err("only non-PIE executables are supported; consider recompiling your app", .{}),
             else => log.err("failed to printfdebug {s}: {any}", .{ args[1], err }),
         }
 

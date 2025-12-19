@@ -1,4 +1,5 @@
 const std = @import("std");
+const elf = @import("elf.zig");
 const source = @import("source.zig");
 const proc = @import("proc.zig");
 const dwarf = @import("dwarf.zig");
@@ -66,6 +67,8 @@ pub const StopReason = struct {
 pub fn init(allocator: Allocator, path: [*:0]const u8) !Debugger {
     const fd = c.open(path, c.O_RDONLY);
     if (fd < 0) return Debugger.Error.Open;
+    const is_pie = try elf.isPie(fd);
+    if (is_pie) return error.Pie;
     const sources = try dwarf.readDwarfSources(allocator, fd);
 
     const debugee_path_len = mem.len(path);
