@@ -158,5 +158,3 @@ fn setupStdin() !std.fs.File {
     }
     return stdin;
 }
-
-fn printErrorTrace(trace: *builtin.StackTrace) void {}
