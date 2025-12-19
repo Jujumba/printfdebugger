@@ -103,7 +103,7 @@ fn readLines(
         const nth_line = source_file.content[nth_line_start..nth_line_end];
 
         if (mem.containsAtLeast(u8, nth_line, 1, "printf")) {
-            // logger.info("{s}:{d} (0x{X}) has a printf", .{ file_name, lineno, addr });
+            logger.info("{s}:{d} has a printf, setting a breakpoint", .{ file_name, lineno });
             sources.printf_lines.put(addr, source_line) catch @panic("oom");
         }
     }

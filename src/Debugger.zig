@@ -31,7 +31,7 @@ const Debugger = @This();
 
 allocator: Allocator,
 debugee_fd: c_int,
-debugee_path: [*:0]const u8,
+debugee_path: []const u8,
 debugee_pid: ?c_int = null,
 executable_proc_map: ?proc.Map = null,
 sources: Sources,
@@ -63,14 +63,17 @@ pub const StopReason = struct {
     }
 };
 
-pub fn init(allocator: Allocator, path: [*:0]const u8) (Debugger.Error || dwarf.Error)!Debugger {
+pub fn init(allocator: Allocator, path: [*:0]const u8) !Debugger {
     const fd = c.open(path, c.O_RDONLY);
     if (fd < 0) return Debugger.Error.Open;
     const sources = try dwarf.readDwarfSources(allocator, fd);
+
+    const debugee_path_len = mem.len(path);
+    const debugee_realpath = try fs.realpathAlloc(allocator, path[0..debugee_path_len]);
     return .{
         .allocator = allocator,
         .debugee_fd = fd,
-        .debugee_path = path,
+        .debugee_path = debugee_realpath,
         .breakpoints = .init(allocator),
         .sources = sources,
     };
@@ -90,9 +93,9 @@ pub fn run(debugger: *Debugger) !void {
     // child
     if (fork_pid == 0) {
         _ = c.ptrace(c.PTRACE_TRACEME, @as(c_int, 0), @as(usize, 0), @as(usize, 0));
-        const argv = [_][*c]const u8{ debugger.debugee_path, null };
+        const argv = [_][*c]const u8{ debugger.debugee_path.ptr, null };
         const env = [_][*c]const u8{null};
-        _ = c.execve(debugger.debugee_path, @ptrCast(&argv), @ptrCast(&env));
+        _ = c.execve(debugger.debugee_path.ptr, @ptrCast(&argv), @ptrCast(&env));
         @panic("failed to start the child process");
     }
     // catch execve
@@ -102,15 +105,13 @@ pub fn run(debugger: *Debugger) !void {
 
     assert(c.ptrace(c.PTRACE_SETOPTIONS, debugger.debugee_pid.?, C_NULL, tracing_options) != -1);
 
-    const debugee_path_len = mem.len(debugger.debugee_path);
-    const debugee_realpath = try fs.realpathAlloc(debugger.allocator, debugger.debugee_path[0..debugee_path_len]);
     const maps = try proc.Map.readFromVfs(debugger.allocator, debugger.debugee_pid.?);
 
     debugger.executable_proc_map = for (maps.items) |map| {
-        if (map.permissions.execute and mem.eql(u8, map.pathname, debugee_realpath)) {
+        if (map.permissions.execute and mem.eql(u8, map.pathname, debugger.debugee_path)) {
             break map;
         }
-    } else panic("failed to find executable map in {s}", .{debugee_realpath});
+    } else panic("failed to find executable map in {s}", .{debugger.debugee_path});
 }
 
 pub fn wait(debugger: *Debugger) Debugger.Error!StopReason {

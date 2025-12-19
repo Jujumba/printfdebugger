@@ -75,6 +75,7 @@ fn mainImpl(allocator: Allocator, args: [][:0]u8) !void {
     var debugger = try Debugger.init(allocator, args[1]);
     defer debugger.deinit();
 
+    log.warn("running {s}", .{debugger.debugee_path});
     try debugger.run();
 
     // TODO: this only works on non-PIE executables
@@ -114,7 +115,7 @@ fn prompt(reader: *std.Io.Reader, sources: source.Sources, source_line: source.S
     if (source_file.content[line_start] == '\n') line_start += 1;
 
     const format =
-        \\(printfdebugger) breakpoint at {s}{s}{s}:{s}{d}{s}
+        \\(printfdebugger) hit breakpoint at {s}{s}{s}:{s}{d}{s}
         \\{s}{d}{s}    {s}{s}{s}
         \\(printfdebugger) 
     ;

@@ -9,7 +9,7 @@ pub fn myLogger(
 ) void {
     const scope_prefix = switch (scope) {
         std.log.default_log_scope => "",
-        else => " " ++ @tagName(scope) ++ " ",
+        else => @tagName(scope) ++ ": ",
     };
 
     const level_text = comptime switch (level) {
@@ -19,7 +19,7 @@ pub fn myLogger(
         .debug => ansi.brgreenfg ++ ansi.bold ++ "debug" ++ ansi.reset,
     };
 
-    const prefix = "(printfdebugger)" ++ scope_prefix ++ " [" ++ level_text ++ "] ";
+    const prefix = "(printfdebugger)" ++ " [" ++ level_text ++ "] " ++ scope_prefix;
 
     // Print the message to stderr, silently ignoring any errors
     std.debug.lockStdErr();
