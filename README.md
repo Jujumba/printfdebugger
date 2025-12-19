@@ -1,10 +1,10 @@
 # Printfdebugger (literaly)
-Have you been "printfdebugging"? This debugger (not some blasphemous gdb front-end) takes this experience to a new level.
+Ever found yourself "printfdebugging"? This debugger (not some blasphemous gdb front-end) takes this experience to a new level.
 
 It inserts a breakpoint at every line containing `printf` (even in comments!)
 
 > [!CAUTION]
-> My flawless debugger only supports non-PIE executables
+> My flawless debugger only supports non-PIE executables on Linux
 
 # Building
 Make sure you have the following installed:
