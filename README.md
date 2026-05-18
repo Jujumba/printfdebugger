@@ -1,4 +1,4 @@
-# Printfdebugger (literaly)
+# Printfdebugger (literally)
 Ever found yourself "printfdebugging"? This debugger (not some blasphemous gdb front-end) takes this experience to a new level.
 
 It inserts a breakpoint at every line containing `printf` (even in comments!)
